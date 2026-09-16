@@ -76,7 +76,7 @@ export default function App() {
             <div>
               <label className="lbl">Time</label>
               <select value={settings.duration} onChange={(e) => update({ duration: e.target.value as Duration })}>
-                {(["4s", "6s", "8s"] as Duration[]).map((d) => (
+                {(["4s", "6s", "8s", "10s"] as Duration[]).map((d) => (
                   <option key={d} value={d}>{d}</option>
                 ))}
               </select>

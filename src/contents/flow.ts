@@ -63,7 +63,7 @@ async function applySettings(settings: FlowSettings, jobId: string): Promise<voi
     return; // error already reported; continue best-effort
   }
   await selectViaOpener(["Aspect", "Ratio", "16:9", "9:16"], settings.aspect, "flow-aspect", jobId).catch(() => undefined);
-  await selectViaOpener(["Duration", "Length", "4s", "6s", "8s"], settings.duration, "flow-duration", jobId).catch(() => undefined);
+  await selectViaOpener(["Duration", "Length", "4s", "6s", "8s", "10s"], settings.duration, "flow-duration", jobId).catch(() => undefined);
   await selectViaOpener(["Resolution", "Quality", "720p", "1080p"], settings.size, "flow-size", jobId).catch(() => undefined);
 }
 

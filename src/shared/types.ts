@@ -5,7 +5,7 @@ export type FlowModel =
   | "veo-3.1-quality";
 
 export type Aspect = "16:9" | "9:16" | "1:1";
-export type Duration = "4s" | "6s" | "8s";
+export type Duration = "4s" | "6s" | "8s" | "10s";
 export type Size = "720p" | "1080p";
 
 export interface FlowSettings {
@@ -62,9 +62,9 @@ export type Msg =
 export function normalizeSettings(s: FlowSettings): { settings: FlowSettings; warnings: string[] } {
   const out = { ...s };
   const warnings: string[] = [];
-  if (out.model === "omni-1.1-flash" && out.duration === "8s") {
+  if (out.model === "omni-1.1-flash" && (out.duration === "8s" || out.duration === "10s")) {
     out.duration = "6s";
-    warnings.push("omni 1.1 flash max is 6s — clamped 8s to 6s.");
+    warnings.push(`omni 1.1 flash max is 6s — clamped to 6s.`);
   }
   if (out.model === "omni-1.1-flash" && out.size === "1080p") {
     out.size = "720p";
