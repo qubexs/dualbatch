@@ -67,11 +67,25 @@ async function applySettings(settings: FlowSettings, jobId: string): Promise<voi
   await selectViaOpener(["Resolution", "Quality", "720p", "1080p"], settings.size, "flow-size", jobId).catch(() => undefined);
 }
 
-function fillPrompt(text: string): boolean {
+function findPromptBox(): HTMLElement | null {
+  // Prefer the observed Flow prompt container, then the editable inside it.
+  for (const sel of FLOW_SELECTORS.promptBoxContainer) {
+    const container = document.querySelector(sel) as HTMLElement | null;
+    if (container) {
+      const inner =
+        (container.querySelector('[contenteditable="true"], textarea, [role="textbox"]') as HTMLElement | null) ??
+        container;
+      return inner;
+    }
+  }
   const boxes = FLOW_SELECTORS.promptBox
     .flatMap((s) => Array.from(document.querySelectorAll(s)) as HTMLElement[])
     .filter((el) => (el as HTMLInputElement).type !== "file");
-  const box = boxes[boxes.length - 1] ?? boxes[0];
+  return boxes[boxes.length - 1] ?? boxes[0] ?? null;
+}
+
+function fillPrompt(text: string): boolean {
+  const box = findPromptBox();
   if (!box) return false;
   box.focus();
   if (box instanceof HTMLTextAreaElement || box instanceof HTMLInputElement) {
@@ -99,6 +113,11 @@ async function uploadImage(imageUrl: string): Promise<void> {
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+/** Random human-like pause, default 10–20s before touching the prompt box. */
+function randomDelayMs(minMs = 10_000, maxMs = 20_000): number {
+  return Math.floor(minMs + Math.random() * (maxMs - minMs));
+}
+
 async function runFlowGen(jobId: string, imageUrl: string, videoPrompt: string, settings: FlowSettings): Promise<void> {
   if (document.querySelector(FLOW_SELECTORS.loginWall)) {
     await sendToBackground({ type: "JOB_ERROR", jobId, step: "flow-login", note: "Please log in to Google Flow first, then retry." });
@@ -121,6 +140,14 @@ async function runFlowGen(jobId: string, imageUrl: string, videoPrompt: string, 
   }
 
   await sleep(800);
+  const humanPause = randomDelayMs(10_000, 20_000);
+  await sendToBackground({
+    type: "FLOW_STATUS",
+    jobId,
+    status: "flow_uploading",
+    note: `Human-like pause ${(humanPause / 1000).toFixed(0)}s before filling prompt.`
+  });
+  await sleep(humanPause);
   if (!fillPrompt(videoPrompt)) {
     await sendToBackground({ type: "JOB_ERROR", jobId, step: "flow-prompt", note: "Could not find Flow prompt box." });
     return;

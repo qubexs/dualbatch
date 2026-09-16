@@ -19,6 +19,10 @@ export const META_SELECTORS = {
 
 export const FLOW_SELECTORS = {
   promptBox: ['textarea', 'div[contenteditable="true"]', '[role="textbox"]'],
+  // Flow prompt container observed in the wild (flow.google.com/project/...):
+  // "backdrop-blur-elevation-01 bg-fill-blur-thick shadow-blur-elevation-01 rounded-32 ... cursor-text ..."
+  // Match on the two most distinctive tokens; full-class match would be brittle.
+  promptBoxContainer: [".bg-fill-blur-thick.cursor-text", ".backdrop-blur-elevation-01.cursor-text", ".rounded-32.cursor-text"],
   fileInput: 'input[type="file"]',
   // Buttons/menus matched by visible text (see flow.ts textMatch()).
   modelButtonHints: ["Veo", "Omni", "Model"],
