@@ -13,13 +13,18 @@ export interface FlowSettings {
   aspect: Aspect;
   duration: Duration;
   size: Size;
+  /** Random settle pause (seconds) after meta.ai image completes, before download+handoff. */
+  metaDelayMinSec: number;
+  metaDelayMaxSec: number;
 }
 
 export const DEFAULT_SETTINGS: FlowSettings = {
   model: "omni-1.1-flash",
   aspect: "16:9",
   duration: "6s",
-  size: "720p"
+  size: "720p",
+  metaDelayMinSec: 10,
+  metaDelayMaxSec: 30
 };
 
 export const MODEL_LABELS: Record<FlowModel, string> = {
@@ -52,9 +57,9 @@ export interface Job {
 export type Msg =
   | { type: "START_JOB"; prompt: string; videoPromptTemplate: string; settings: FlowSettings }
   | { type: "OPEN_TABS" }
-  | { type: "DO_META_GEN"; jobId: string; prompt: string }
-  | { type: "META_IMAGE_READY"; jobId: string; imageUrl: string }
-  | { type: "DO_FLOW_GEN"; jobId: string; imageUrl: string; videoPrompt: string; settings: FlowSettings }
+  | { type: "DO_META_GEN"; jobId: string; prompt: string; settings: FlowSettings }
+  | { type: "META_IMAGE_READY"; jobId: string; imageUrl: string; imageData?: string; mimeType?: string }
+  | { type: "DO_FLOW_GEN"; jobId: string; imageUrl: string; imageData?: string; videoPrompt: string; settings: FlowSettings }
   | { type: "FLOW_STATUS"; jobId: string; status: JobStatus; note: string }
   | { type: "JOB_ERROR"; jobId: string; step: string; note: string; availableOptions?: string[] };
 
@@ -69,6 +74,13 @@ export function normalizeSettings(s: FlowSettings): { settings: FlowSettings; wa
   if (out.model === "omni-1.1-flash" && out.size === "1080p") {
     out.size = "720p";
     warnings.push("omni 1.1 flash limited to 720p — clamped 1080p to 720p.");
+  }
+  // Sanitize meta settle pause: numbers, 0..120s, min <= max.
+  out.metaDelayMinSec = Math.min(120, Math.max(0, Math.floor(Number(out.metaDelayMinSec) || 0)));
+  out.metaDelayMaxSec = Math.min(120, Math.max(0, Math.floor(Number(out.metaDelayMaxSec) || 0)));
+  if (out.metaDelayMinSec > out.metaDelayMaxSec) {
+    [out.metaDelayMinSec, out.metaDelayMaxSec] = [out.metaDelayMaxSec, out.metaDelayMinSec];
+    warnings.push("Swapped meta wait min/max so min <= max.");
   }
   return { settings: out, warnings };
 }

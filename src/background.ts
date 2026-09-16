@@ -3,7 +3,7 @@ import { logLine } from "./shared/messaging";
 
 const META_URL = "https://www.meta.ai/";
 const FLOW_URL = "https://flow.google.com/";
-const META_TIMEOUT_MS = 120_000;
+const META_TIMEOUT_MS = 180_000; // image gen + up to 120s settle pause
 const FLOW_TIMEOUT_MS = 60_000;
 
 function isFlowUrl(u?: string): boolean {
@@ -155,7 +155,7 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
       // (content scripts are missing in tabs opened before the extension reloaded).
       setTimeout(async () => {
         await waitForTabComplete(metaTabId);
-        const ok = await deliver(metaTabId, { type: "DO_META_GEN", jobId, prompt: msg.prompt } satisfies Msg, "meta");
+        const ok = await deliver(metaTabId, { type: "DO_META_GEN", jobId, prompt: msg.prompt, settings: msg.settings } satisfies Msg, "meta");
         if (!ok) {
           await patchJob(
             jobId,
@@ -180,6 +180,22 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
 
     if (msg.type === "META_IMAGE_READY") {
       await patchJob(msg.jobId, { status: "image_ready", imageUrl: msg.imageUrl }, `Image ready: ${msg.imageUrl.slice(0, 80)}...`);
+      // Real download to the user's Downloads folder (best-effort, never fails the job).
+      try {
+        const filename = `meta-${msg.jobId}.png`;
+        if (msg.imageData) {
+          const dataUrl = msg.imageData.startsWith("data:")
+            ? msg.imageData
+            : `data:${msg.mimeType || "image/png"};base64,${msg.imageData}`;
+          await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
+          await patchJob(msg.jobId, {}, `Downloaded ${filename} to Downloads.`);
+        } else {
+          await chrome.downloads.download({ url: msg.imageUrl, filename, saveAs: false });
+          await patchJob(msg.jobId, {}, `Downloaded ${filename} to Downloads.`);
+        }
+      } catch (e) {
+        await patchJob(msg.jobId, {}, `Download skipped (${(e as Error).message}); continuing with handoff.`);
+      }
       const refs = await getRefs();
       if (refs.flowTabId == null) {
         await patchJob(msg.jobId, { status: "error" }, "Flow tab id unknown. Click Open both tabs.");
@@ -193,6 +209,7 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
         type: "DO_FLOW_GEN",
         jobId: msg.jobId,
         imageUrl: msg.imageUrl,
+        imageData: msg.imageData,
         videoPrompt,
         settings: cur.settings
       } satisfies Msg;

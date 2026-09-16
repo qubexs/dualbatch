@@ -3,7 +3,7 @@
   "name": "Dual Meta to Flow",
   "version": "0.1.0",
   "description": "One-click pipeline: meta.ai image -> flow.google.com video.",
-  "permissions": ["tabs", "scripting", "storage"],
+  "permissions": ["tabs", "scripting", "storage", "downloads"],
   "host_permissions": ["*://*.meta.ai/*", "*://flow.google.com/*", "*://labs.google.com/*", "*://*.google.com/*"],
   "background": {
     "service_worker": "src/background.ts",

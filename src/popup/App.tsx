@@ -100,6 +100,27 @@ export default function App() {
           </div>
           <label className="lbl">Video prompt template (use {"{prompt}"})</label>
           <input value={template} onChange={(e) => setTemplate(e.target.value)} />
+          <label className="lbl">Wait after meta.ai image, before download (s, random)</label>
+          <div className="row">
+            <div>
+              <input
+                type="number"
+                min={0}
+                max={120}
+                value={settings.metaDelayMinSec}
+                onChange={(e) => update({ metaDelayMinSec: Number(e.target.value) })}
+              />
+            </div>
+            <div>
+              <input
+                type="number"
+                min={0}
+                max={120}
+                value={settings.metaDelayMaxSec}
+                onChange={(e) => update({ metaDelayMaxSec: Number(e.target.value) })}
+              />
+            </div>
+          </div>
           {settings.model === "omni-1.1-flash" && <p className="hint">omni flash: max 6s / 720p (auto-clamped).</p>}
         </div>
       )}

@@ -1,4 +1,4 @@
-import type { Msg } from "../shared/types";
+import type { FlowSettings, Msg } from "../shared/types";
 import { META_SELECTORS } from "../shared/selectors";
 import { sendToBackground, sleep } from "../shared/messaging";
 
@@ -241,7 +241,16 @@ function waitForNewImage(alreadySeen: Set<string>, timeoutMs: number): Promise<s
   });
 }
 
-async function runMetaGen(jobId: string, prompt: string): Promise<void> {
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = () => reject(new Error("could not read image blob"));
+    r.readAsDataURL(blob);
+  });
+}
+
+async function runMetaGen(jobId: string, prompt: string, settings: FlowSettings): Promise<void> {
   if (document.querySelector(META_SELECTORS.loginWall)) {
     await sendToBackground({ type: "JOB_ERROR", jobId, step: "meta-login", note: "Please log in to meta.ai first, then retry." });
     return;
@@ -287,7 +296,38 @@ async function runMetaGen(jobId: string, prompt: string): Promise<void> {
 
   try {
     const url = await waitForNewImage(seen, 115_000);
-    await sendToBackground({ type: "META_IMAGE_READY", jobId, imageUrl: url });
+    // Random settle pause (default 10–30s) so the full-res image finishes
+    // rendering and the handoff looks human.
+    const minS = Math.max(0, settings.metaDelayMinSec ?? 10);
+    const maxS = Math.max(minS, settings.metaDelayMaxSec ?? 30);
+    const pauseMs = Math.floor((minS + Math.random() * (maxS - minS)) * 1000);
+    await sendToBackground({
+      type: "FLOW_STATUS",
+      jobId,
+      status: "meta_generating",
+      note: `Image complete. Human-like pause ${(pauseMs / 1000).toFixed(0)}s before download.`
+    });
+    await sleep(pauseMs);
+    // Download the bytes here (same origin as the CDN img) and hand them
+    // to Flow as a data URL — no auth/CORS gamble on the Flow side.
+    let imageData: string | undefined;
+    let mimeType: string | undefined;
+    try {
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      mimeType = blob.type || "image/png";
+      imageData = await blobToDataUrl(blob);
+    } catch (e) {
+      // Fall back to URL-only handoff; Flow tab will try fetching itself.
+      await sendToBackground({
+        type: "FLOW_STATUS",
+        jobId,
+        status: "meta_generating",
+        note: `Download in meta.ai tab failed (${(e as Error).message}); handing off URL only.`
+      });
+    }
+    await sendToBackground({ type: "META_IMAGE_READY", jobId, imageUrl: url, imageData, mimeType });
   } catch (e) {
     await sendToBackground({
       type: "JOB_ERROR",
@@ -300,5 +340,5 @@ async function runMetaGen(jobId: string, prompt: string): Promise<void> {
 }
 
 chrome.runtime.onMessage.addListener((msg: Msg) => {
-  if (msg.type === "DO_META_GEN") void runMetaGen(msg.jobId, msg.prompt);
+  if (msg.type === "DO_META_GEN") void runMetaGen(msg.jobId, msg.prompt, msg.settings);
 });

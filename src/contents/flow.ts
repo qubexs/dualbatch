@@ -99,9 +99,12 @@ function fillPrompt(text: string): boolean {
   return true;
 }
 
-async function uploadImage(imageUrl: string): Promise<void> {
+async function uploadImage(imageUrl: string, imageData?: string): Promise<void> {
   const input = document.querySelector(FLOW_SELECTORS.fileInput) as HTMLInputElement | null;
-  const file = await fetchUrlToFile(imageUrl, "meta-image.png");
+  // Prefer bytes downloaded in the meta.ai tab (data URL) — no CORS/auth gamble here.
+  const file = imageData
+    ? new File([await (await fetch(imageData)).blob()], "meta-image.png", { type: "image/png" })
+    : await fetchUrlToFile(imageUrl, "meta-image.png");
   if (!input) {
     // No file input found — try drag-drop target fallback is out of scope for v1.
     throw new Error("no-file-input");
@@ -118,7 +121,7 @@ function randomDelayMs(minMs = 10_000, maxMs = 20_000): number {
   return Math.floor(minMs + Math.random() * (maxMs - minMs));
 }
 
-async function runFlowGen(jobId: string, imageUrl: string, videoPrompt: string, settings: FlowSettings): Promise<void> {
+async function runFlowGen(jobId: string, imageUrl: string, videoPrompt: string, settings: FlowSettings, imageData?: string): Promise<void> {
   if (document.querySelector(FLOW_SELECTORS.loginWall)) {
     await sendToBackground({ type: "JOB_ERROR", jobId, step: "flow-login", note: "Please log in to Google Flow first, then retry." });
     return;
@@ -127,7 +130,7 @@ async function runFlowGen(jobId: string, imageUrl: string, videoPrompt: string, 
   await applySettings(settings, jobId);
 
   try {
-    await uploadImage(imageUrl);
+    await uploadImage(imageUrl, imageData);
   } catch {
     await sendToBackground({
       type: "JOB_ERROR",
@@ -159,5 +162,5 @@ async function runFlowGen(jobId: string, imageUrl: string, videoPrompt: string, 
 }
 
 chrome.runtime.onMessage.addListener((msg: Msg) => {
-  if (msg.type === "DO_FLOW_GEN") void runFlowGen(msg.jobId, msg.imageUrl, msg.videoPrompt, msg.settings);
+  if (msg.type === "DO_FLOW_GEN") void runFlowGen(msg.jobId, msg.imageUrl, msg.videoPrompt, msg.settings, msg.imageData);
 });
