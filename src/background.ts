@@ -35,6 +35,77 @@ function newJobId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+async function tabExists(tabId?: number): Promise<boolean> {
+  if (tabId == null) return false;
+  try {
+    await chrome.tabs.get(tabId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function waitForTabComplete(tabId: number, timeoutMs = 15_000): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    }, timeoutMs);
+    const listener = (id: number, info: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => {
+      if (id === tabId && info.status === "complete") {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        // document_idle scripts need a beat after complete.
+        setTimeout(resolve, 1200);
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    // Already complete? resolve shortly.
+    chrome.tabs.get(tabId).then((t) => {
+      if (t.status === "complete") {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        setTimeout(resolve, 1200);
+      }
+    }).catch(() => {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    });
+  });
+}
+
+/**
+ * Content scripts only exist in tabs that loaded AFTER the extension was
+ * loaded/reloaded. Retry delivery, then reload the tab once and retry —
+ * otherwise the user must manually refresh the tab.
+ */
+async function deliver(tabId: number, msg: Msg, label: string): Promise<boolean> {
+  for (let i = 0; i < 4; i++) {
+    try {
+      await chrome.tabs.sendMessage(tabId, msg);
+      return true;
+    } catch {
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  try {
+    await chrome.tabs.reload(tabId);
+    await waitForTabComplete(tabId);
+    for (let i = 0; i < 4; i++) {
+      try {
+        await chrome.tabs.sendMessage(tabId, msg);
+        return true;
+      } catch {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+  } catch {
+    /* fall through to failure */
+  }
+  return false;
+}
+
 async function patchJob(jobId: string, patch: Partial<Job>, line?: string): Promise<Job | undefined> {
   const { jobs } = await chrome.storage.local.get("jobs");
   const all = (jobs ?? {}) as Record<string, Job>;
@@ -63,8 +134,8 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
 
     if (msg.type === "START_JOB") {
       const refs = await getRefs();
-      const metaTabId = refs.metaTabId ?? (await findOrCreate(META_URL, (u) => !!u && u.includes("meta.ai")));
-      const flowTabId = refs.flowTabId ?? (await findOrCreate(FLOW_URL, isFlowUrl));
+      let metaTabId = (await tabExists(refs.metaTabId)) ? refs.metaTabId! : await findOrCreate(META_URL, (u) => !!u && u.includes("meta.ai"));
+      let flowTabId = (await tabExists(refs.flowTabId)) ? refs.flowTabId! : await findOrCreate(FLOW_URL, isFlowUrl);
       await chrome.storage.local.set({ metaTabId, flowTabId });
 
       const jobId = newJobId();
@@ -80,12 +151,19 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
       const { jobs } = await chrome.storage.local.get("jobs");
       await chrome.storage.local.set({ jobs: { ...((jobs ?? {}) as Record<string, Job>), [jobId]: job }, lastJobId: jobId });
 
-      // Give tabs a moment to have content scripts ready.
-      setTimeout(() => {
-        chrome.tabs.sendMessage(metaTabId, { type: "DO_META_GEN", jobId, prompt: msg.prompt } satisfies Msg).catch(() =>
-          patchJob(jobId, { status: "error" }, "Could not reach meta.ai tab. Open meta.ai and retry.")
-        );
-      }, 800);
+      // Wait for the tab to finish loading, then deliver with retries
+      // (content scripts are missing in tabs opened before the extension reloaded).
+      setTimeout(async () => {
+        await waitForTabComplete(metaTabId);
+        const ok = await deliver(metaTabId, { type: "DO_META_GEN", jobId, prompt: msg.prompt } satisfies Msg, "meta");
+        if (!ok) {
+          await patchJob(
+            jobId,
+            { status: "error" },
+            "Could not reach meta.ai tab even after refresh. Manually refresh the meta.ai tab once, then press Start again."
+          );
+        }
+      }, 300);
 
       // Timeout guard for meta step.
       setTimeout(async () => {
@@ -111,15 +189,22 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
       const cur = (jobs as Record<string, Job>)[msg.jobId];
       const videoPrompt = (cur?.videoPromptTemplate || "{prompt}, cinematic motion").replace("{prompt}", cur?.prompt ?? "");
       await patchJob(msg.jobId, { status: "flow_uploading" }, `Sending image to Flow tab ${refs.flowTabId}.`);
-      chrome.tabs
-        .sendMessage(refs.flowTabId, {
-          type: "DO_FLOW_GEN",
-          jobId: msg.jobId,
-          imageUrl: msg.imageUrl,
-          videoPrompt,
-          settings: cur.settings
-        } satisfies Msg)
-        .catch(() => patchJob(msg.jobId, { status: "error" }, "Could not reach Flow tab. Open flow.google.com and retry."));
+      const flowMsg = {
+        type: "DO_FLOW_GEN",
+        jobId: msg.jobId,
+        imageUrl: msg.imageUrl,
+        videoPrompt,
+        settings: cur.settings
+      } satisfies Msg;
+      deliver(refs.flowTabId, flowMsg, "flow").then((ok) => {
+        if (!ok) {
+          void patchJob(
+            msg.jobId,
+            { status: "error" },
+            "Could not reach Flow tab even after refresh. Manually refresh the flow.google.com tab once, then press Start again."
+          );
+        }
+      });
 
       setTimeout(async () => {
         const { jobs: j } = await chrome.storage.local.get("jobs");
