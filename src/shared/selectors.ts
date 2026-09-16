@@ -4,7 +4,15 @@
 export const META_SELECTORS = {
   editor: [
     'div[contenteditable="true"]',
+    'div[contenteditable="plaintext-only"]',
+    '[contenteditable="true"]',
     'textarea[placeholder*="Ask" i]',
+    'textarea[placeholder*="Message" i]',
+    'textarea[aria-label*="Ask" i]',
+    'textarea[aria-label*="Message" i]',
+    '[aria-label*="Ask Meta" i]',
+    '[data-testid*="composer"]',
+    '[data-testid*="input"]',
     'textarea',
     '[role="textbox"]'
   ],

@@ -2,38 +2,194 @@ import type { Msg } from "../shared/types";
 import { META_SELECTORS } from "../shared/selectors";
 import { sendToBackground, sleep } from "../shared/messaging";
 
-function queryFirst(selectors: string[]): HTMLElement | null {
-  for (const s of selectors) {
+function isVisible(el: Element): boolean {
+  const r = (el as HTMLElement).getBoundingClientRect?.();
+  if (r && (r.width < 2 || r.height < 2)) return false;
+  const style = getComputedStyle(el as HTMLElement);
+  return style.display !== "none" && style.visibility !== "hidden";
+}
+
+/** Collect every editor candidate, visible ones first. */
+function allEditors(): HTMLElement[] {
+  const seen = new Set<HTMLElement>();
+  for (const s of META_SELECTORS.editor) {
     try {
-      const el = document.querySelector(s) as HTMLElement | null;
-      if (el && el.offsetParent !== null) return el;
+      for (const el of Array.from(document.querySelectorAll(s))) {
+        if (el instanceof HTMLElement && !seen.has(el)) seen.add(el);
+      }
     } catch {
       /* ignore bad selector */
     }
   }
-  // fallback: any visible match even if offsetParent check failed
-  for (const s of selectors) {
-    const el = document.querySelector(s) as HTMLElement | null;
-    if (el) return el;
+  const all = [...seen];
+  return all.sort((a, b) => Number(isVisible(b)) - Number(isVisible(a)));
+}
+
+async function waitForEditor(timeoutMs = 20_000): Promise<HTMLElement | null> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const found = allEditors().find(isVisible) ?? allEditors()[0] ?? null;
+    if (found) return found;
+    await sleep(500);
   }
   return null;
 }
 
-function setEditorText(el: HTMLElement, text: string): void {
+function editorText(el: HTMLElement): string {
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) return el.value;
+  return el.innerText ?? el.textContent ?? "";
+}
+
+/** Insert text with several strategies; returns true if the text stuck. */
+async function setEditorText(el: HTMLElement, text: string): Promise<boolean> {
+  el.scrollIntoView({ block: "center" });
   el.focus();
+  (el as HTMLElement & { click?: () => void }).click?.();
+  await sleep(200);
+
   if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
-    const setter = Object.getOwnPropertyDescriptor(
-      el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
-      "value"
-    )?.set;
-    setter?.call(el, text);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, "");
+    Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, text);
+    el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
   } else {
-    // contenteditable
-    document.execCommand("selectAll", false);
-    document.execCommand("insertText", false, text);
-    el.dispatchEvent(new InputEvent("input", { bubbles: true, data: text }));
+    // Rich editors (Lexical/ProseMirror/Draft): select-all + typed insertion.
+    const sel = window.getSelection();
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    } catch {
+      /* ignore */
+    }
+    let ok = false;
+    try {
+      ok = document.execCommand("selectAll", false) || ok;
+    } catch {
+      /* ignore */
+    }
+    try {
+      ok = document.execCommand("insertText", false, text) || ok;
+    } catch {
+      /* ignore */
+    }
+    if (!editorText(el).includes(text.slice(0, 20))) {
+      // Fallback: direct write + synthetic beforeinput/input so React picks it up.
+      el.focus();
+      try {
+        (el as HTMLElement).textContent = "";
+        document.execCommand("selectAll", false);
+      } catch {
+        /* ignore */
+      }
+      el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, composed: true, inputType: "insertText", data: text }));
+      el.textContent = text;
+      // Place caret at end so Enter goes to the right node.
+      try {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      } catch {
+        /* ignore */
+      }
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: text }));
+    }
   }
+  await sleep(400);
+  return editorText(el).includes(text.slice(0, 20));
+}
+
+function findSendButton(editor: HTMLElement): HTMLElement | null {
+  // 1. Explicit send-labeled buttons.
+  for (const s of ['button[aria-label*="Send" i]', 'button[data-testid*="send"]', 'button[type="submit"]']) {
+    try {
+      const btns = Array.from(document.querySelectorAll(s)) as HTMLElement[];
+      const vis = btns.find(isVisible);
+      if (vis) return vis;
+    } catch {
+      /* ignore */
+    }
+  }
+  // 2. Button near the editor (same form / composer container).
+  const root = editor.closest("form") ?? editor.parentElement?.closest("div") ?? document.body;
+  const near = Array.from(root.querySelectorAll("button")) as HTMLElement[];
+  const withSvg = near.filter(isVisible).reverse().find((b) => b.querySelector("svg"));
+  if (withSvg) return withSvg;
+  // 3. Any visible button with an icon, page-wide.
+  const anyBtn = (Array.from(document.querySelectorAll("button")) as HTMLElement[]).filter(isVisible);
+  return anyBtn.reverse().find((b) => b.querySelector("svg")) ?? null;
+}
+
+function isDisabled(btn: HTMLElement): boolean {
+  return (
+    (btn as HTMLButtonElement).disabled ||
+    btn.getAttribute("aria-disabled") === "true" ||
+    btn.getAttribute("data-disabled") === "true"
+  );
+}
+
+async function submitPrompt(editor: HTMLElement): Promise<boolean> {
+  // Strategy 1: click an enabled send button (wait for it to enable after typing).
+  for (let i = 0; i < 10; i++) {
+    const btn = findSendButton(editor);
+    if (btn && !isDisabled(btn)) {
+      btn.click();
+      await sleep(800);
+      return true;
+    }
+    await sleep(500);
+  }
+  // Strategy 2: synthetic Enter on the focused node (full key init for React).
+  const target = (document.activeElement as HTMLElement) ?? editor;
+  for (const type of ["keydown", "keypress", "keyup"] as const) {
+    target.dispatchEvent(
+      new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, composed: true })
+    );
+  }
+  await sleep(800);
+  // Strategy 3: submit enclosing form.
+  const form = editor.closest("form") as HTMLFormElement | null;
+  if (form) {
+    try {
+      form.requestSubmit();
+      return true;
+    } catch {
+      form.submit();
+      return true;
+    }
+  }
+  // Disabled send button as last resort — click anyway.
+  const btn = findSendButton(editor);
+  if (btn) {
+    btn.click();
+    return true;
+  }
+  return false;
+}
+
+function diagnostics(): string[] {
+  const out: string[] = [`url=${location.href}`];
+  out.push(`textarea=${document.querySelectorAll("textarea").length}`);
+  out.push(`contenteditable=${document.querySelectorAll('[contenteditable="true"]').length}`);
+  out.push(`textbox=${document.querySelectorAll('[role="textbox"]').length}`);
+  out.push(`buttons=${document.querySelectorAll("button").length}`);
+  const placeholders = Array.from(document.querySelectorAll("textarea, input"))
+    .map((e) => (e as HTMLTextAreaElement).placeholder || (e as HTMLElement).getAttribute("aria-label") || "")
+    .filter(Boolean)
+    .slice(0, 5);
+  if (placeholders.length) out.push(`fields: ${placeholders.join(" | ")}`);
+  const btnLabels = (Array.from(document.querySelectorAll("button")) as HTMLElement[])
+    .map((b) => (b.getAttribute("aria-label") || b.innerText || "").trim().replace(/\s+/g, " ").slice(0, 30))
+    .filter(Boolean)
+    .slice(0, 8);
+  if (btnLabels.length) out.push(`buttons: ${btnLabels.join(" | ")}`);
+  const cands = allEditors().length;
+  out.push(`editorCandidates=${cands}`);
+  return out;
 }
 
 function pickBestImageUrl(img: HTMLImageElement): string {
@@ -72,7 +228,6 @@ function waitForNewImage(alreadySeen: Set<string>, timeoutMs: number): Promise<s
     });
     obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
 
-    // Poll too, in case images load without DOM churn we catch.
     const iv = setInterval(() => {
       const found = check();
       if (found) {
@@ -91,28 +246,56 @@ async function runMetaGen(jobId: string, prompt: string): Promise<void> {
     await sendToBackground({ type: "JOB_ERROR", jobId, step: "meta-login", note: "Please log in to meta.ai first, then retry." });
     return;
   }
-  const editor = queryFirst(META_SELECTORS.editor);
+  // Wait for SPA to render the composer instead of failing on first paint.
+  const editor = await waitForEditor(20_000);
   if (!editor) {
-    await sendToBackground({ type: "JOB_ERROR", jobId, step: "meta-prompt-box", note: "Could not find meta.ai prompt box. Selectors may need updating." });
+    await sendToBackground({
+      type: "JOB_ERROR",
+      jobId,
+      step: "meta-prompt-box",
+      note: "Could not find meta.ai prompt box after 20s.",
+      availableOptions: diagnostics()
+    });
     return;
   }
   const seen = new Set(
     Array.from(document.querySelectorAll(META_SELECTORS.image)).map((i) => (i as HTMLImageElement).currentSrc || (i as HTMLImageElement).src)
   );
-  setEditorText(editor, prompt);
-  await sleep(600);
+  const stuck = await setEditorText(editor, prompt);
+  if (!stuck) {
+    await sendToBackground({
+      type: "JOB_ERROR",
+      jobId,
+      step: "meta-fill",
+      note: "Found the prompt box but the text did not stick (rich editor rejected synthetic input).",
+      availableOptions: diagnostics()
+    });
+    return;
+  }
 
-  const sendBtn = queryFirst(META_SELECTORS.sendButton);
-  if (sendBtn) sendBtn.click();
-  else {
-    editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+  const submitted = await submitPrompt(editor);
+  if (!submitted) {
+    await sendToBackground({
+      type: "JOB_ERROR",
+      jobId,
+      step: "meta-send",
+      note: "Prompt typed but no send control worked.",
+      availableOptions: diagnostics()
+    });
+    return;
   }
 
   try {
     const url = await waitForNewImage(seen, 115_000);
     await sendToBackground({ type: "META_IMAGE_READY", jobId, imageUrl: url });
   } catch (e) {
-    await sendToBackground({ type: "JOB_ERROR", jobId, step: "meta-wait-image", note: (e as Error).message });
+    await sendToBackground({
+      type: "JOB_ERROR",
+      jobId,
+      step: "meta-wait-image",
+      note: `${(e as Error).message}. Prompt was submitted but no image appeared — check the meta.ai tab.`,
+      availableOptions: diagnostics()
+    });
   }
 }
 
