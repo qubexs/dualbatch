@@ -2,9 +2,13 @@ import type { Job, JobStatus, Msg } from "./shared/types";
 import { logLine } from "./shared/messaging";
 
 const META_URL = "https://www.meta.ai/";
-const FLOW_URL = "https://labs.google.com/flow";
+const FLOW_URL = "https://flow.google.com/";
 const META_TIMEOUT_MS = 120_000;
 const FLOW_TIMEOUT_MS = 60_000;
+
+function isFlowUrl(u?: string): boolean {
+  return !!u && (u.includes("flow.google.com") || u.includes("labs.google"));
+}
 
 interface TabRefs {
   metaTabId?: number;
@@ -51,7 +55,7 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
   (async () => {
     if (msg.type === "OPEN_TABS") {
       const metaTabId = await findOrCreate(META_URL, (u) => !!u && u.includes("meta.ai"));
-      const flowTabId = await findOrCreate(FLOW_URL, (u) => !!u && u.includes("labs.google"));
+      const flowTabId = await findOrCreate(FLOW_URL, isFlowUrl);
       await chrome.storage.local.set({ metaTabId, flowTabId });
       sendResponse({ metaTabId, flowTabId });
       return;
@@ -60,7 +64,7 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
     if (msg.type === "START_JOB") {
       const refs = await getRefs();
       const metaTabId = refs.metaTabId ?? (await findOrCreate(META_URL, (u) => !!u && u.includes("meta.ai")));
-      const flowTabId = refs.flowTabId ?? (await findOrCreate(FLOW_URL, (u) => !!u && u.includes("labs.google")));
+      const flowTabId = refs.flowTabId ?? (await findOrCreate(FLOW_URL, isFlowUrl));
       await chrome.storage.local.set({ metaTabId, flowTabId });
 
       const jobId = newJobId();
@@ -115,7 +119,7 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
           videoPrompt,
           settings: cur.settings
         } satisfies Msg)
-        .catch(() => patchJob(msg.jobId, { status: "error" }, "Could not reach Flow tab. Open labs.google.com/flow and retry."));
+        .catch(() => patchJob(msg.jobId, { status: "error" }, "Could not reach Flow tab. Open flow.google.com and retry."));
 
       setTimeout(async () => {
         const { jobs: j } = await chrome.storage.local.get("jobs");

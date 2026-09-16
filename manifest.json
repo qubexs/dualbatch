@@ -2,9 +2,9 @@
   "manifest_version": 3,
   "name": "Dual Meta to Flow",
   "version": "0.1.0",
-  "description": "One-click pipeline: meta.ai image -> labs.google.com/flow video.",
+  "description": "One-click pipeline: meta.ai image -> flow.google.com video.",
   "permissions": ["tabs", "scripting", "storage"],
-  "host_permissions": ["*://*.meta.ai/*", "*://labs.google.com/*", "*://*.google.com/*"],
+  "host_permissions": ["*://*.meta.ai/*", "*://flow.google.com/*", "*://labs.google.com/*", "*://*.google.com/*"],
   "background": {
     "service_worker": "src/background.ts",
     "type": "module"
@@ -16,7 +16,7 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["*://labs.google.com/*"],
+      "matches": ["*://flow.google.com/*", "*://labs.google.com/*"],
       "js": ["src/contents/flow.ts"],
       "run_at": "document_idle"
     }
